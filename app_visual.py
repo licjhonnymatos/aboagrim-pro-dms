@@ -1959,310 +1959,269 @@ def vista_plantillas():
 
 def vista_honorarios():
     import streamlit as st
+    import pandas as pd
     from datetime import datetime
     from database import db as supabase  # ☁️ Conexión maestra a la nube
 
-    st.title("💳 Gestión de Honorarios y Facturación")
-    st.markdown("### 💰 Cotizaciones, Acuerdos y Estado de Cuentas")
+    st.title("💳 Bóveda Financiera y Honorarios")
+    st.markdown("### *AboAgrim Pro: Control de Facturación, Cotizaciones y Cobros*")
 
     # 🛡️ Seguridad: Solo Administradores ven el dinero
-    if st.session_state.get("rol_actual") != "Presidente Fundador":
-        st.error("⛔ Acceso Denegado. Área exclusiva de la Presidencia.")
+    if st.session_state.get("rol_actual") not in ["Presidente Fundador", "Contabilidad"]:
+        st.error("⛔ Acceso Denegado. Área exclusiva de la Presidencia y Dirección Financiera.")
         return
 
-    # --- 1. VINCULACIÓN AL CASO (DESDE SUPABASE) ---
-    try:
-        respuesta = supabase.table("expedientes").select("*").execute()
-        db_expedientes_cloud = {row['id_expediente']: row for row in respuesta.data}
-    except Exception:
-        db_expedientes_cloud = {}
-
-    lista_exps = ["-- Cliente Independiente --"] + list(db_expedientes_cloud.keys())
-    exp_seleccionado = st.selectbox("Vincular Facturación a Expediente:", lista_exps)
-
-    cliente_proforma = "Cliente no especificado"
-    asunto_proforma = "Servicios Legales / Agrimensura"
-
-    if exp_seleccionado != "-- Cliente Independiente --":
-        # Extraemos los datos del expediente para inyectarlos en la proforma
-        exp_data = db_expedientes_cloud[exp_seleccionado]
-        asunto_proforma = exp_data.get("asunto", "Servicios Legales")
-        
-        # Intentamos obtener el nombre del primer cliente
-        lista_clientes = exp_data.get("clientes", [])
-        if lista_clientes and isinstance(lista_clientes, list) and len(lista_clientes) > 0:
-            cliente_proforma = lista_clientes[0].get("nombre", "Cliente del Expediente")
-            
-        st.success(f"🔗 Vinculado a Expediente: **{asunto_proforma}** (Cliente: {cliente_proforma})")
-
-    st.write("---")
-
-    # --- 2. ACUERDOS Y FORMAS DE PAGO ---
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("📝 Acuerdos y Condiciones")
-        tipo_acuerdo = st.selectbox("Tipo de Acuerdo de Honorarios:", [
-            "Monto Fijo (Suma Alzada)",
-            "Cuota Litis (Porcentaje de los resultados)",
-            "Iguala Mensual (Servicios recurrentes)",
-            "Tarifa por Hora",
-            "Pago por Etapa / Hito Catastral"
-        ])
-        
-        plan_pago = st.selectbox("Plan de Pago Estipulado:", [
-            "50% Avance Inicial / 50% Contra Entrega",
-            "100% Por Adelantado",
-            "30% Inicio / 30% Proceso / 40% Final",
-            "Pagos Mensuales Fijos",
-            "Al Finalizar el Caso (Cuota Litis)"
-        ])
-
-    with col2:
-        st.subheader("💵 Métodos de Pago")
-        forma_pago = st.selectbox("Forma de Pago Esperada:", [
-            "Transferencia Bancaria",
-            "Depósito en Cuenta",
-            "Cheque Certificado",
-            "Cheque de Administración",
-            "Efectivo"
-        ])
-        moneda = st.selectbox("Moneda de Facturación:", ["RD$ (Pesos Dominicanos)", "US$ (Dólares Estadounidenses)"])
-
-    # --- 3. CONCEPTOS A FACTURAR (DINÁMICO) ---
-    st.write("---")
-    st.subheader("🛒 Conceptos y Servicios")
-    
+    # --- 0. INICIALIZACIÓN DE MEMORIA DINÁMICA ---
     if "cant_conceptos" not in st.session_state:
         st.session_state["cant_conceptos"] = 1
 
-    c_btn1, c_btn2 = st.columns([1, 4])
-    if c_btn1.button("➕ Agregar Concepto"): st.session_state["cant_conceptos"] += 1
-    if c_btn2.button("➖ Quitar") and st.session_state["cant_conceptos"] > 1: st.session_state["cant_conceptos"] -= 1
+    def mod_cant_conceptos(operacion):
+        if operacion == "add":
+            st.session_state["cant_conceptos"] += 1
+        elif operacion == "del" and st.session_state["cant_conceptos"] > 1:
+            st.session_state["cant_conceptos"] -= 1
 
-    subtotal = 0.0
-    conceptos_factura = []
-    
-    for i in range(st.session_state["cant_conceptos"]):
-        c1, c2, c3 = st.columns([3, 1, 1])
-        desc = c1.text_input(f"Descripción del Servicio {i+1}:", placeholder="Ej. Saneamiento Parcela 44...", key=f"fac_desc_{i}")
-        cant = c2.number_input("Cantidad:", min_value=1, value=1, key=f"fac_cant_{i}")
-        precio = c3.number_input("Precio Unitario:", min_value=0.0, value=0.0, step=1000.0, key=f"fac_prec_{i}")
+    # --- 1. EXTRACCIÓN MAESTRA DE DATOS DESDE SUPABASE ---
+    # Traemos expedientes
+    try:
+        res_exp = supabase.table("expedientes").select("*").execute()
+        db_expedientes = {row['id_expediente']: row for row in res_exp.data} if res_exp.data else {}
+    except Exception:
+        db_expedientes = {}
+
+    # Traemos facturas (Creamos la lógica por si la tabla no existe o está vacía)
+    try:
+        res_fac = supabase.table("facturas").select("*").execute()
+        db_facturas = res_fac.data if res_fac.data else []
+    except Exception:
+        db_facturas = []
+
+    # --- ESTRUCTURA DE PESTAÑAS FINANCIERAS ---
+    tab_dash, tab_nueva, tab_historial = st.tabs([
+        "📊 Tablero de Rendimiento", 
+        "🧾 Emitir Cotización / Acuerdo", 
+        "🗄️ Historial de Cuentas"
+    ])
+
+    # =========================================================
+    # PESTAÑA A: TABLERO FINANCIERO (DASHBOARD)
+    # =========================================================
+    with tab_dash:
+        st.subheader("Rendimiento Financiero de la Firma")
         
-        total_linea = cant * precio
-        subtotal += total_linea
-        if desc: conceptos_factura.append({"desc": desc, "cant": cant, "precio": precio, "total": total_linea})
+        # Cálculos del Dashboard
+        total_facturado = sum(f.get("total", 0) for f in db_facturas)
+        total_pagado = sum(f.get("monto_pagado", 0) for f in db_facturas)
+        total_pendiente = total_facturado - total_pagado
+        facturas_activas = len(db_facturas)
 
-    # --- 4. IMPUESTOS Y RETENCIONES ---
-    st.write("---")
-    st.subheader("📊 Impuestos y Retenciones")
-    col_imp1, col_imp2, col_imp3 = st.columns(3)
-    aplicar_itbis = col_imp1.checkbox("➕ Sumar ITBIS (18%)", value=False) # Falso por defecto para honorarios legales
-    retencion_isr = col_imp2.checkbox("➖ Retención ISR (10% - Empresas)")
-    retencion_itbis = col_imp3.checkbox("➖ Retención ITBIS (100% o 30%)")
-
-    itbis = subtotal * 0.18 if aplicar_itbis else 0.0
-    isr = subtotal * 0.10 if retencion_isr else 0.0
-    ret_itbis = itbis if retencion_itbis else 0.0
-    
-    total_pagar = subtotal + itbis - isr - ret_itbis
-
-    # --- 5. CUENTAS BANCARIAS OFICIALES ---
-    st.write("---")
-    st.subheader("🏦 Cuentas Bancarias para Depósitos")
-    st.info("Estas cuentas oficiales de la firma se incluirán en el recibo/proforma del cliente.")
-    
-    c_banco1, c_banco2 = st.columns(2)
-    with c_banco1:
-        st.success("**🏦 Banco BHD**\n\nTipo: **Cuenta de Ahorros**\n\nNo. Cuenta: **08010850011**")
-    with c_banco2:
-        st.info("**🏦 Banco de Reservas**\n\nTipo: **Cuenta de Ahorros**\n\nNo. Cuenta: **9601369253**")
-
-    # --- 6. RESUMEN Y EMISIÓN ---
-    st.write("---")
-    st.markdown(f"### 🧾 Resumen Total a Pagar: {moneda} {total_pagar:,.2f}")
-    
-    if st.button("🚀 Registrar Acuerdo y Generar Proforma", type="primary", use_container_width=True):
-        if conceptos_factura:
-            st.success("✅ Acuerdo de honorarios estructurado correctamente.")
-            
-            # --- VISTA PREVIA DEL RECIBO ---
-            st.markdown("<br>", unsafe_allow_html=True)
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
             with st.container(border=True):
-                st.markdown(f"<h3 style='text-align: center;'>📄 Proforma de Honorarios y Servicios</h3>", unsafe_allow_html=True)
-                col_prof1, col_prof2 = st.columns(2)
-                col_prof1.markdown(f"**Fecha:** {datetime.now().strftime('%d/%m/%Y')}")
-                col_prof1.markdown(f"**Cliente:** {cliente_proforma}")
-                col_prof2.markdown(f"**Expediente:** {exp_seleccionado}")
-                col_prof2.markdown(f"**Asunto:** {asunto_proforma}")
-                st.divider()
-                st.markdown(f"**Términos del Acuerdo:** {tipo_acuerdo}")
-                st.markdown(f"**Plan de Pago:** {plan_pago}")
-                st.markdown(f"**Método de Pago:** {forma_pago}")
-                st.divider()
-                
-                # Detalle de servicios
-                for c in conceptos_factura:
-                    st.write(f"🔹 **{c['cant']}x** {c['desc']}  .................  **{moneda} {c['total']:,.2f}**")
-                
-                st.divider()
-                st.write(f"Subtotal: {moneda} {subtotal:,.2f}")
-                if aplicar_itbis: st.write(f"ITBIS (18%): {moneda} {itbis:,.2f}")
-                if retencion_isr: st.write(f"Retención ISR (10%): -{moneda} {isr:,.2f}")
-                if retencion_itbis: st.write(f"Retención ITBIS: -{moneda} {ret_itbis:,.2f}")
-                
-                st.markdown(f"#### **MONTO TOTAL: {moneda} {total_pagar:,.2f}**")
-                st.divider()
-                
-                # Cuentas bancarias impresas en la proforma
-                st.markdown("**Realizar pagos exclusivamente a las siguientes cuentas a nombre de la firma:**")
-                st.markdown("✅ **Banco BHD:** Cuenta de Ahorros # **08010850011**")
-                st.markdown("✅ **Banco de Reservas:** Cuenta de Ahorros # **9601369253**")
-                
-        else:
-            st.error("⚠️ Debe agregar al menos un servicio o concepto con su valor antes de generar la proforma.")
+                st.metric("🧾 Cotizaciones Emitidas", facturas_activas)
+        with col2:
+            with st.container(border=True):
+                st.metric("💰 Total Facturado (RD$)", f"${total_facturado:,.2f}")
+        with col3:
+            with st.container(border=True):
+                st.metric("✅ Total Cobrado (RD$)", f"${total_pagado:,.2f}")
+        with col4:
+            with st.container(border=True):
+                st.metric("⚠️ Cuentas por Cobrar", f"${total_pendiente:,.2f}")
 
-# ==========================================
-# 🎨 APLICADOR DE DISEÑO GLOBAL
-# ==========================================
-if "color_primario" in st.session_state:
-    st.markdown(f"""
-        <style>
-        .stApp {{
-            background-color: {st.session_state["color_fondo"]};
-            font-family: {st.session_state["tipo_letra"]};
-        }}
-        .stButton>button[kind="primary"] {{
-            background-color: {st.session_state["color_primario"]};
-            border-color: {st.session_state["color_primario"]};
-        }}
-        h1, h2, h3 {{
-            color: {st.session_state["color_primario"]} !important;
-            font-family: {st.session_state["tipo_letra"]};
-        }}
-        </style>
-    """, unsafe_allow_html=True)
-# =====================================================================
-# 🔐 CANDADO MAESTRO Y NAVEGACIÓN DINÁMICA (AL FONDO DEL ARCHIVO)
-# =====================================================================
-import streamlit as st
-from database import db as supabase # Asegúrese de que este import coincida con su sistema
+        st.info("💡 Este tablero lee en tiempo real todas las cotizaciones y pagos registrados en Supabase.")
 
-# 1. Inicializar la memoria de seguridad del sistema
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = ""
-if "rol_actual" not in st.session_state:
-    st.session_state.rol_actual = ""
+    # =========================================================
+    # PESTAÑA B: NUEVA PROFORMA / FACTURA
+    # =========================================================
+    with tab_nueva:
+        st.subheader("Crear Nuevo Acuerdo de Honorarios")
+        
+        lista_exps = ["-- Cliente Independiente (Sin Expediente) --"] + list(db_expedientes.keys())
+        exp_seleccionado = st.selectbox("🔗 Vincular a Expediente (Opcional):", lista_exps)
 
-# ==========================================
-# 🛑 LA PUERTA DE HIERRO (LOGIN GLOBAL)
-# ==========================================
-if not st.session_state.autenticado:
-    # Ocultamos el menú lateral nativo de Streamlit con un pequeño truco visual
-    st.markdown("""<style>[data-testid="collapsedControl"] {display: none;}</style>""", unsafe_allow_html=True)
-    
-    st.markdown("<h1 style='text-align: center; color: #1E3A8A; font-size: 4rem;'>🏛️</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>AboAgrim Pro</h2>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: gray;'>Acceso Restringido</h4>", unsafe_allow_html=True)
-    
-    col_izq, col_centro, col_der = st.columns([1, 2, 1])
-    
-    with col_centro:
+        cliente_proforma = ""
+        asunto_proforma = "Servicios Legales y Topográficos"
+        cedula_proforma = ""
+
+        # Autocompletado si selecciona un expediente
+        if exp_seleccionado != "-- Cliente Independiente (Sin Expediente) --":
+            exp_data = db_expedientes[exp_seleccionado]
+            asunto_proforma = exp_data.get("asunto", "Servicios Legales")
+            lista_clientes = exp_data.get("clientes", [])
+            if lista_clientes:
+                cliente_proforma = lista_clientes[0].get("nombre", "")
+                cedula_proforma = lista_clientes[0].get("cedula", "")
+            st.success(f"Datos inyectados desde el expediente: **{asunto_proforma}**")
+
         with st.container(border=True):
-            st.write("Por favor, identifíquese para acceder a la bóveda:")
-            u_login = st.text_input("Usuario:")
-            p_login = st.text_input("PIN de Acceso:", type="password")
+            st.markdown("#### 1. Datos Generales")
+            c_g1, c_g2, c_g3 = st.columns(3)
+            cliente_final = c_g1.text_input("Nombre del Cliente/Empresa:", value=cliente_proforma)
+            cedula_final = c_g2.text_input("Cédula / RNC:", value=cedula_proforma)
+            asunto_final = c_g3.text_input("Concepto General:", value=asunto_proforma)
+
+        with st.container(border=True):
+            st.markdown("#### 2. Condiciones del Acuerdo")
+            col1, col2, col3 = st.columns(3)
+            tipo_acuerdo = col1.selectbox("Tipo de Honorarios:", ["Monto Fijo (Suma Alzada)", "Cuota Litis (%)", "Iguala Mensual", "Pago por Etapa"])
+            plan_pago = col2.selectbox("Plan de Pago:", ["50% Inicio / 50% Final", "100% Adelantado", "30% / 30% / 40%", "Contra Entrega"])
+            moneda = col3.selectbox("Moneda:", ["RD$ (Pesos)", "US$ (Dólares)"])
+
+        with st.container(border=True):
+            st.markdown("#### 3. Detalle de Servicios")
+            c_btn1, c_btn2, _ = st.columns([1, 1, 3])
+            c_btn1.button("➕ Agregar Línea", on_click=mod_cant_conceptos, args=("add",), key="add_conc")
+            c_btn2.button("➖ Quitar Línea", on_click=mod_cant_conceptos, args=("del",), key="del_conc")
+
+            subtotal = 0.0
+            conceptos_factura = []
             
-            if st.button("🔓 Iniciar Sesión", use_container_width=True, type="primary"):
-                if u_login and p_login:
-                    try:
-                        # Vamos a Supabase a verificar si existe y si la clave es correcta
-                        res = supabase.table("usuarios").select("*").eq("nombre_usuario", u_login).eq("pin_acceso", p_login).execute()
-                        
-                        if res.data and len(res.data) > 0:
-                            usuario_valido = res.data[0]
-                            st.session_state.autenticado = True
-                            st.session_state.usuario_actual = usuario_valido["nombre_usuario"]
-                            st.session_state.rol_actual = usuario_valido["rol"]
-                            st.rerun() # Recargamos la página para abrir el sistema
-                        else:
-                            # 🔑 RESPALDO MASTER (Por si Supabase falla o usted queda fuera)
-                            if u_login == "JhonnyMatos" and p_login == "0681":
-                                st.session_state.autenticado = True
-                                st.session_state.usuario_actual = "Jhonny Matos"
-                                st.session_state.rol_actual = "Presidente Fundador"
-                                st.rerun()
-                            else:
-                                st.error("❌ Usuario o PIN incorrectos. Acceso denegado.")
-                    except Exception as e:
-                        st.error(f"Error en los servidores de autenticación: {e}")
+            for i in range(st.session_state["cant_conceptos"]):
+                c1, c2, c3, c4 = st.columns([4, 1, 2, 2])
+                desc = c1.text_input(f"Descripción {i+1}:", key=f"fac_desc_{i}")
+                cant = c2.number_input("Cant:", min_value=1, value=1, key=f"fac_cant_{i}")
+                precio = c3.number_input("Precio Unit.:", min_value=0.0, value=0.0, step=1000.0, key=f"fac_prec_{i}")
+                
+                total_linea = cant * precio
+                c4.markdown(f"<div style='padding-top: 35px; font-weight: bold;'>{moneda} {total_linea:,.2f}</div>", unsafe_allow_html=True)
+                subtotal += total_linea
+                
+                if desc: conceptos_factura.append({"desc": desc, "cant": cant, "precio": precio, "total": total_linea})
+
+        with st.container(border=True):
+            st.markdown("#### 4. Impuestos y Emisión")
+            col_imp1, col_imp2, col_imp3 = st.columns(3)
+            aplicar_itbis = col_imp1.checkbox("Sumar ITBIS (18%)", value=False)
+            retencion_isr = col_imp2.checkbox("Retención ISR (10%)")
+            ret_itbis = col_imp3.number_input("Monto Retención ITBIS (RD$):", min_value=0.0, value=0.0)
+
+            itbis = subtotal * 0.18 if aplicar_itbis else 0.0
+            isr = subtotal * 0.10 if retencion_isr else 0.0
+            total_pagar = subtotal + itbis - isr - ret_itbis
+
+            st.markdown(f"### 🧾 Total a Facturar: {moneda} {total_pagar:,.2f}")
+
+            if st.button("💾 Guardar Acuerdo en Supabase", type="primary", use_container_width=True):
+                if not cliente_final or not conceptos_factura:
+                    st.error("⚠️ Debe indicar el cliente y al menos un concepto a facturar.")
                 else:
-                    st.warning("⚠️ Ingrese credenciales.")
+                    id_factura = f"FAC-{datetime.now().strftime('%Y%m%d%H%M')}"
+                    datos_factura = {
+                        "id_factura": id_factura,
+                        "id_expediente": exp_seleccionado if exp_seleccionado != "-- Cliente Independiente (Sin Expediente) --" else None,
+                        "cliente": cliente_final,
+                        "cedula": cedula_final,
+                        "asunto": asunto_final,
+                        "fecha_emision": datetime.now().strftime("%Y-%m-%d"),
+                        "tipo_acuerdo": tipo_acuerdo,
+                        "plan_pago": plan_pago,
+                        "moneda": moneda,
+                        "conceptos": conceptos_factura,
+                        "subtotal": subtotal,
+                        "itbis": itbis,
+                        "retenciones": isr + ret_itbis,
+                        "total": total_pagar,
+                        "monto_pagado": 0.0, # Nace con 0 pagado
+                        "estado": "Pendiente"
+                    }
+                    try:
+                        supabase.table("facturas").upsert(datos_factura).execute()
+                        st.success(f"✅ ¡Factura {id_factura} registrada en la bóveda contable!")
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar en Supabase. Asegúrese de haber creado la tabla 'facturas'. Detalle: {e}")
 
-# ==========================================
-# 🟢 EL SISTEMA INTERNO (Si ya pasó el Login)
-# ==========================================
-else:
-    # Recuperamos el menú lateral nativo
-    st.markdown("""<style>[data-testid="collapsedControl"] {display: block;}</style>""", unsafe_allow_html=True)
-    
-    # --- MENÚ LATERAL DINÁMICO ---
-    with st.sidebar:
-        st.markdown(f"### 👤 {st.session_state.usuario_actual}")
-        st.caption(f"🛡️ Nivel: **{st.session_state.rol_actual}**")
+    # =========================================================
+    # PESTAÑA C: HISTORIAL Y ESTADO DE CUENTAS
+    # =========================================================
+    with tab_historial:
+        st.subheader("🗄️ Registro Histórico de Facturas")
         
-        if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            st.session_state.autenticado = False
-            st.rerun()
-            
-        st.divider()
-        st.markdown("**Navegación Principal:**")
-        
-        opciones_menu = [
-            "🏠 Mando Central", 
-            "👤 Registro Maestro", 
-            "📁 Archivo Digital", 
-            "⏰ Alertas y Plazos"
-        ]
-        
-        # --- ⚖️ MATRIZ DE PERMISOS INTELIGENTE ---
-        rol = st.session_state.rol_actual
-        es_presidente = (rol == "Presidente Fundador")
-        
-        puede_ver_plantillas = es_presidente or (rol in ["Abogado", "Agrimensor"])
-        puede_ver_honorarios = es_presidente or (rol in ["Contabilidad"]) 
-        puede_ver_config = es_presidente # Exclusivo de la Presidencia
-        
-        if puede_ver_plantillas:
-            opciones_menu.append("📄 Plantillas Auto")
-        if puede_ver_honorarios:
-            opciones_menu.append("💳 Gestión de Honorarios")
-        if puede_ver_config:
-            opciones_menu.append("⚙️ Configuración")
-
-        # ESTO DIBUJA LOS BOTONES DENTRO DE LA BARRA LATERAL
-        seleccion = st.radio("Módulos", opciones_menu, label_visibility="collapsed")
-        
-        st.divider()
-        st.caption("📍 AboAgrim Pro | Santiago")
-
-    # --- RUTAS DE NAVEGACIÓN (Enlazando sus funciones) ---
-    # ESTO VA AFUERA DE LA BARRA (Para que el contenido salga en el centro)
-    if seleccion == "🏠 Mando Central":
-        vista_mando()
-    elif seleccion == "👤 Registro Maestro":
-        vista_registro_maestro()
-    elif seleccion == "📁 Archivo Digital":
-        vista_archivo_digital()
-    elif seleccion == "⏰ Alertas y Plazos":
-        vista_alertas_plazos()
-    elif seleccion == "📄 Plantillas Auto":
-        vista_plantillas()
-    elif seleccion == "💳 Gestión de Honorarios":
-        vista_honorarios()
-    elif seleccion == "⚙️ Configuración":
-        vista_configuracion()
+        if db_facturas:
+            for idx, fac in enumerate(reversed(db_facturas)):
+                color_estado = "green" if fac.get('estado') == "Pagada" else "red"
+                
+                with st.expander(f"🧾 {fac.get('id_factura')} | {fac.get('cliente')} - {fac.get('moneda')} {fac.get('total', 0):,.2f}"):
+                    c1, c2, c3 = st.columns(3)
+                    c1.write(f"**Fecha:** {fac.get('fecha_emision')}")
+                    c2.write(f"**Expediente:** {fac.get('id_expediente', 'N/A')}")
+                    c3.markdown(f"**Estado:** <span style='color:{color_estado}; font-weight:bold;'>{fac.get('estado', 'Pendiente')}</span>", unsafe_allow_html=True)
+                    
+                    st.write(f"**Asunto:** {fac.get('asunto')}")
+                    
+                    # 🖨️ Generador Visual HTML para Imprimir a PDF
+                    st.divider()
+                    st.write("**Vista Previa del Documento:**")
+                    
+                    # Construimos una vista HTML elegante del recibo
+                    lineas_html = "".join([f"<tr><td style='border-bottom: 1px solid #ddd; padding: 8px;'>{c['cant']}</td><td style='border-bottom: 1px solid #ddd; padding: 8px;'>{c['desc']}</td><td style='border-bottom: 1px solid #ddd; padding: 8px;'>{fac.get('moneda')} {c['total']:,.2f}</td></tr>" for c in fac.get('conceptos', [])])
+                    
+                    html_recibo = f"""
+                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 10px; max-width: 800px; margin: auto; background-color: white; color: black;">
+                        <h2 style="color: #B8860B; text-align: center; border-bottom: 2px solid #B8860B; padding-bottom: 10px;">ABOAGRIM PRO</h2>
+                        <h4 style="text-align: center; margin-top: -10px; color: #333;">Firma de Abogados & Agrimensores</h4>
+                        <table style="width: 100%; margin-top: 20px;">
+                            <tr>
+                                <td><strong>Cotización / Acuerdo No.:</strong> {fac.get('id_factura')}</td>
+                                <td style="text-align: right;"><strong>Fecha:</strong> {fac.get('fecha_emision')}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Cliente:</strong> {fac.get('cliente')}</td>
+                                <td style="text-align: right;"><strong>Cédula/RNC:</strong> {fac.get('cedula', 'N/A')}</td>
+                            </tr>
+                            <tr>
+                                <td colspan="2"><strong>Asunto:</strong> {fac.get('asunto')}</td>
+                            </tr>
+                        </table>
+                        
+                        <table style="width: 100%; margin-top: 20px; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background-color: #f2f2f2;">
+                                    <th style="padding: 8px; text-align: left;">Cant.</th>
+                                    <th style="padding: 8px; text-align: left;">Descripción de los Servicios</th>
+                                    <th style="padding: 8px; text-align: left;">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {lineas_html}
+                            </tbody>
+                        </table>
+                        
+                        <table style="width: 100%; margin-top: 20px;">
+                            <tr>
+                                <td style="width: 60%; vertical-align: top;">
+                                    <p><strong>Condiciones:</strong> {fac.get('tipo_acuerdo')} - {fac.get('plan_pago')}</p>
+                                    <p><strong>Cuentas Bancarias Oficiales:</strong><br>
+                                    - Banco BHD (Ahorros): 08010850011<br>
+                                    - Banreservas (Ahorros): 9601369253</p>
+                                </td>
+                                <td style="width: 40%; text-align: right; background-color: #f9f9f9; padding: 10px; border-radius: 5px;">
+                                    <p><strong>Subtotal:</strong> {fac.get('moneda')} {fac.get('subtotal', 0):,.2f}</p>
+                                    <p><strong>Impuestos/Retenciones:</strong> {fac.get('moneda')} {(fac.get('itbis',0) - fac.get('retenciones',0)):,.2f}</p>
+                                    <h3 style="color: #1E3A8A;">TOTAL A PAGAR: {fac.get('moneda')} {fac.get('total', 0):,.2f}</h3>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                    """
+                    st.components.v1.html(html_recibo, height=450, scrolling=True)
+                    
+                    # Botón para descargar el código HTML (Que luego se puede imprimir a PDF)
+                    st.download_button(
+                        label="⬇️ Descargar Archivo para Imprimir",
+                        data=html_recibo,
+                        file_name=f"Factura_{fac.get('id_factura')}.html",
+                        mime="text/html",
+                        key=f"dl_{idx}"
+                    )
+                    
+                    # Eliminar factura (Solo si hubo un error)
+                    if st.button("🗑️ Eliminar Registro", key=f"del_{fac.get('id_factura')}_{idx}"):
+                        supabase.table("facturas").delete().eq("id_factura", fac.get('id_factura')).execute()
+                        st.rerun()
+        else:
+            st.info("No hay facturas registradas en la nube. Comience creando una en la pestaña anterior.")
 # --- CENTRO DE ENLACES INSTITUCIONALES (BARRA LATERAL) ---
     st.sidebar.divider()
     
