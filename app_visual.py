@@ -1966,7 +1966,7 @@ def vista_honorarios():
     st.markdown("### 💰 Cotizaciones, Acuerdos y Estado de Cuentas")
 
     # 🛡️ Seguridad: Solo Administradores ven el dinero
-    if st.session_state.get("rol_actual") != "Presidente Fundador":
+    if st.session_state.get("rol_actual") not in ["Presidente Fundador", "Contabilidad"]:
         st.error("⛔ Acceso Denegado. Área exclusiva de la Presidencia.")
         return
 
@@ -1981,6 +1981,7 @@ def vista_honorarios():
     exp_seleccionado = st.selectbox("Vincular Facturación a Expediente:", lista_exps)
 
     cliente_proforma = "Cliente no especificado"
+    cedula_proforma = "N/A"
     asunto_proforma = "Servicios Legales / Agrimensura"
 
     if exp_seleccionado != "-- Cliente Independiente --":
@@ -1992,6 +1993,7 @@ def vista_honorarios():
         lista_clientes = exp_data.get("clientes", [])
         if lista_clientes and isinstance(lista_clientes, list) and len(lista_clientes) > 0:
             cliente_proforma = lista_clientes[0].get("nombre", "Cliente del Expediente")
+            cedula_proforma = lista_clientes[0].get("cedula", "N/A")
             
         st.success(f"🔗 Vinculado a Expediente: **{asunto_proforma}** (Cliente: {cliente_proforma})")
 
@@ -2002,31 +2004,21 @@ def vista_honorarios():
     with col1:
         st.subheader("📝 Acuerdos y Condiciones")
         tipo_acuerdo = st.selectbox("Tipo de Acuerdo de Honorarios:", [
-            "Monto Fijo (Suma Alzada)",
-            "Cuota Litis (Porcentaje de los resultados)",
-            "Iguala Mensual (Servicios recurrentes)",
-            "Tarifa por Hora",
-            "Pago por Etapa / Hito Catastral"
+            "Monto Fijo (Suma Alzada)", "Cuota Litis (Porcentaje de los resultados)",
+            "Iguala Mensual (Servicios recurrentes)", "Tarifa por Hora", "Pago por Etapa / Hito Catastral"
         ])
         
         plan_pago = st.selectbox("Plan de Pago Estipulado:", [
-            "50% Avance Inicial / 50% Contra Entrega",
-            "100% Por Adelantado",
-            "30% Inicio / 30% Proceso / 40% Final",
-            "Pagos Mensuales Fijos",
-            "Al Finalizar el Caso (Cuota Litis)"
+            "50% Avance Inicial / 50% Contra Entrega", "100% Por Adelantado",
+            "30% Inicio / 30% Proceso / 40% Final", "Pagos Mensuales Fijos", "Al Finalizar el Caso (Cuota Litis)"
         ])
 
     with col2:
         st.subheader("💵 Métodos de Pago")
         forma_pago = st.selectbox("Forma de Pago Esperada:", [
-            "Transferencia Bancaria",
-            "Depósito en Cuenta",
-            "Cheque Certificado",
-            "Cheque de Administración",
-            "Efectivo"
+            "Transferencia Bancaria", "Depósito en Cuenta", "Cheque Certificado", "Efectivo"
         ])
-        moneda = st.selectbox("Moneda de Facturación:", ["RD$ (Pesos Dominicanos)", "US$ (Dólares Estadounidenses)"])
+        moneda = st.selectbox("Moneda de Facturación:", ["RD$", "US$"])
 
     # --- 3. CONCEPTOS A FACTURAR (DINÁMICO) ---
     st.write("---")
@@ -2050,15 +2042,16 @@ def vista_honorarios():
         
         total_linea = cant * precio
         subtotal += total_linea
-        if desc: conceptos_factura.append({"desc": desc, "cant": cant, "precio": precio, "total": total_linea})
+        if desc and precio > 0: # ⚠️ Seguro: Solo toma conceptos que tengan descripción y precio
+            conceptos_factura.append({"desc": desc, "cant": cant, "precio": precio, "total": total_linea})
 
     # --- 4. IMPUESTOS Y RETENCIONES ---
     st.write("---")
     st.subheader("📊 Impuestos y Retenciones")
     col_imp1, col_imp2, col_imp3 = st.columns(3)
-    aplicar_itbis = col_imp1.checkbox("➕ Sumar ITBIS (18%)", value=False) # Falso por defecto para honorarios legales
+    aplicar_itbis = col_imp1.checkbox("➕ Sumar ITBIS (18%)", value=False)
     retencion_isr = col_imp2.checkbox("➖ Retención ISR (10% - Empresas)")
-    retencion_itbis = col_imp3.checkbox("➖ Retención ITBIS (100% o 30%)")
+    retencion_itbis = col_imp3.checkbox("➖ Retención ITBIS")
 
     itbis = subtotal * 0.18 if aplicar_itbis else 0.0
     isr = subtotal * 0.10 if retencion_isr else 0.0
@@ -2069,8 +2062,6 @@ def vista_honorarios():
     # --- 5. CUENTAS BANCARIAS OFICIALES ---
     st.write("---")
     st.subheader("🏦 Cuentas Bancarias para Depósitos")
-    st.info("Estas cuentas oficiales de la firma se incluirán en el recibo/proforma del cliente.")
-    
     c_banco1, c_banco2 = st.columns(2)
     with c_banco1:
         st.success("**🏦 Banco BHD**\n\nTipo: **Cuenta de Ahorros**\n\nNo. Cuenta: **08010850011**")
@@ -2081,188 +2072,102 @@ def vista_honorarios():
     st.write("---")
     st.markdown(f"### 🧾 Resumen Total a Pagar: {moneda} {total_pagar:,.2f}")
     
-    if st.button("🚀 Registrar Acuerdo y Generar Proforma", type="primary", use_container_width=True):
-        if conceptos_factura:
-            st.success("✅ Acuerdo de honorarios estructurado correctamente.")
-            
-            # --- VISTA PREVIA DEL RECIBO ---
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown(f"<h3 style='text-align: center;'>📄 Proforma de Honorarios y Servicios</h3>", unsafe_allow_html=True)
-                col_prof1, col_prof2 = st.columns(2)
-                col_prof1.markdown(f"**Fecha:** {datetime.now().strftime('%d/%m/%Y')}")
-                col_prof1.markdown(f"**Cliente:** {cliente_proforma}")
-                col_prof2.markdown(f"**Expediente:** {exp_seleccionado}")
-                col_prof2.markdown(f"**Asunto:** {asunto_proforma}")
-                st.divider()
-                st.markdown(f"**Términos del Acuerdo:** {tipo_acuerdo}")
-                st.markdown(f"**Plan de Pago:** {plan_pago}")
-                st.markdown(f"**Método de Pago:** {forma_pago}")
-                st.divider()
-                
-                # Detalle de servicios
-                for c in conceptos_factura:
-                    st.write(f"🔹 **{c['cant']}x** {c['desc']}  .................  **{moneda} {c['total']:,.2f}**")
-                
-                st.divider()
-                st.write(f"Subtotal: {moneda} {subtotal:,.2f}")
-                if aplicar_itbis: st.write(f"ITBIS (18%): {moneda} {itbis:,.2f}")
-                if retencion_isr: st.write(f"Retención ISR (10%): -{moneda} {isr:,.2f}")
-                if retencion_itbis: st.write(f"Retención ITBIS: -{moneda} {ret_itbis:,.2f}")
-                
-                st.markdown(f"#### **MONTO TOTAL: {moneda} {total_pagar:,.2f}**")
-                st.divider()
-                
-                # Cuentas bancarias impresas en la proforma
-                st.markdown("**Realizar pagos exclusivamente a las siguientes cuentas a nombre de la firma:**")
-                st.markdown("✅ **Banco BHD:** Cuenta de Ahorros # **08010850011**")
-                st.markdown("✅ **Banco de Reservas:** Cuenta de Ahorros # **9601369253**")
-                
+    # 🔥 EL MOTOR DE EMISIÓN DE FACTURA
+    if st.button("🚀 Registrar Acuerdo y Emitir Factura", type="primary", use_container_width=True):
+        if not conceptos_factura:
+            st.error("⚠️ Debe escribir al menos un concepto y colocarle un precio mayor a 0 para poder emitir la factura.")
         else:
-            st.error("⚠️ Debe agregar al menos un servicio o concepto con su valor antes de generar la proforma.")
-
-# ==========================================
-# 🎨 APLICADOR DE DISEÑO GLOBAL
-# ==========================================
-if "color_primario" in st.session_state:
-    st.markdown(f"""
-        <style>
-        .stApp {{
-            background-color: {st.session_state["color_fondo"]};
-            font-family: {st.session_state["tipo_letra"]};
-        }}
-        .stButton>button[kind="primary"] {{
-            background-color: {st.session_state["color_primario"]};
-            border-color: {st.session_state["color_primario"]};
-        }}
-        h1, h2, h3 {{
-            color: {st.session_state["color_primario"]} !important;
-            font-family: {st.session_state["tipo_letra"]};
-        }}
-        </style>
-    """, unsafe_allow_html=True)
-# =====================================================================
-# 🔐 CANDADO MAESTRO Y NAVEGACIÓN DINÁMICA (AL FONDO DEL ARCHIVO)
-# =====================================================================
-import streamlit as st
-from database import db as supabase # Asegúrese de que este import coincida con su sistema
-
-# 1. Inicializar la memoria de seguridad del sistema
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = ""
-if "rol_actual" not in st.session_state:
-    st.session_state.rol_actual = ""
-
-# ==========================================
-# 🛑 LA PUERTA DE HIERRO (LOGIN GLOBAL)
-# ==========================================
-if not st.session_state.autenticado:
-    # Ocultamos el menú lateral nativo de Streamlit con un pequeño truco visual
-    st.markdown("""<style>[data-testid="collapsedControl"] {display: none;}</style>""", unsafe_allow_html=True)
-    
-    st.markdown("<h1 style='text-align: center; color: #1E3A8A; font-size: 4rem;'>🏛️</h1>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>AboAgrim Pro</h2>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: gray;'>Acceso Restringido</h4>", unsafe_allow_html=True)
-    
-    col_izq, col_centro, col_der = st.columns([1, 2, 1])
-    
-    with col_centro:
-        with st.container(border=True):
-            st.write("Por favor, identifíquese para acceder a la bóveda:")
-            u_login = st.text_input("Usuario:")
-            p_login = st.text_input("PIN de Acceso:", type="password")
+            id_factura = f"FAC-{datetime.now().strftime('%Y%m%d-%H%M')}"
             
-            if st.button("🔓 Iniciar Sesión", use_container_width=True, type="primary"):
-                if u_login and p_login:
-                    try:
-                        # Vamos a Supabase a verificar si existe y si la clave es correcta
-                        res = supabase.table("usuarios").select("*").eq("nombre_usuario", u_login).eq("pin_acceso", p_login).execute()
-                        
-                        if res.data and len(res.data) > 0:
-                            usuario_valido = res.data[0]
-                            st.session_state.autenticado = True
-                            st.session_state.usuario_actual = usuario_valido["nombre_usuario"]
-                            st.session_state.rol_actual = usuario_valido["rol"]
-                            st.rerun() # Recargamos la página para abrir el sistema
-                        else:
-                            # 🔑 RESPALDO MASTER (Por si Supabase falla o usted queda fuera)
-                            if u_login == "JhonnyMatos" and p_login == "0681":
-                                st.session_state.autenticado = True
-                                st.session_state.usuario_actual = "Jhonny Matos"
-                                st.session_state.rol_actual = "Presidente Fundador"
-                                st.rerun()
-                            else:
-                                st.error("❌ Usuario o PIN incorrectos. Acceso denegado.")
-                    except Exception as e:
-                        st.error(f"Error en los servidores de autenticación: {e}")
-                else:
-                    st.warning("⚠️ Ingrese credenciales.")
-
-# ==========================================
-# 🟢 EL SISTEMA INTERNO (Si ya pasó el Login)
-# ==========================================
-else:
-    # Recuperamos el menú lateral nativo
-    st.markdown("""<style>[data-testid="collapsedControl"] {display: block;}</style>""", unsafe_allow_html=True)
-    
-    # --- MENÚ LATERAL DINÁMICO ---
-    with st.sidebar:
-        st.markdown(f"### 👤 {st.session_state.usuario_actual}")
-        st.caption(f"🛡️ Nivel: **{st.session_state.rol_actual}**")
-        
-        if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            st.session_state.autenticado = False
-            st.rerun()
+            # Construimos la factura en HTML para que se vea como un documento real
+            lineas_html = "".join([f"<tr><td style='border-bottom: 1px solid #ddd; padding: 8px;'>{c['cant']}</td><td style='border-bottom: 1px solid #ddd; padding: 8px;'>{c['desc']}</td><td style='border-bottom: 1px solid #ddd; padding: 8px; text-align: right;'>{moneda} {c['total']:,.2f}</td></tr>" for c in conceptos_factura])
             
-        st.divider()
-        st.markdown("**Navegación Principal:**")
-        
-        opciones_menu = [
-            "🏠 Mando Central", 
-            "👤 Registro Maestro", 
-            "📁 Archivo Digital", 
-            "⏰ Alertas y Plazos"
-        ]
-        
-        # --- ⚖️ MATRIZ DE PERMISOS INTELIGENTE ---
-        rol = st.session_state.rol_actual
-        es_presidente = (rol == "Presidente Fundador")
-        
-        puede_ver_plantillas = es_presidente or (rol in ["Abogado", "Agrimensor"])
-        puede_ver_honorarios = es_presidente or (rol in ["Contabilidad"]) 
-        puede_ver_config = es_presidente # Exclusivo de la Presidencia
-        
-        if puede_ver_plantillas:
-            opciones_menu.append("📄 Plantillas Auto")
-        if puede_ver_honorarios:
-            opciones_menu.append("💳 Gestión de Honorarios")
-        if puede_ver_config:
-            opciones_menu.append("⚙️ Configuración")
+            html_recibo = f"""
+            <div style="font-family: Arial, sans-serif; padding: 30px; border: 1px solid #ccc; max-width: 800px; margin: auto; background-color: white; color: black; box-shadow: 2px 2px 10px rgba(0,0,0,0.1);">
+                <div style="text-align: center; border-bottom: 2px solid #B8860B; padding-bottom: 10px; margin-bottom: 20px;">
+                    <h1 style="color: #B8860B; margin: 0;">ABOAGRIM PRO</h1>
+                    <h3 style="color: #333; margin: 5px 0;">Firma de Abogados & Agrimensores</h3>
+                    <p style="margin: 0; font-size: 14px;">Santiago, Rep. Dom. | Tel: 829-826-5888 | Lic. Jhonny Matos. M.A.</p>
+                </div>
+                
+                <table style="width: 100%; margin-bottom: 20px;">
+                    <tr>
+                        <td><strong>Cotización / Factura No.:</strong> {id_factura}</td>
+                        <td style="text-align: right;"><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y')}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Cliente:</strong> {cliente_proforma}</td>
+                        <td style="text-align: right;"><strong>Cédula/RNC:</strong> {cedula_proforma}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2"><strong>Asunto:</strong> {asunto_proforma}</td>
+                    </tr>
+                </table>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                    <thead>
+                        <tr style="background-color: #f2f2f2;">
+                            <th style="padding: 10px; text-align: left; border-bottom: 2px solid #ccc;">Cant.</th>
+                            <th style="padding: 10px; text-align: left; border-bottom: 2px solid #ccc;">Descripción de los Servicios</th>
+                            <th style="padding: 10px; text-align: right; border-bottom: 2px solid #ccc;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {lineas_html}
+                    </tbody>
+                </table>
+                
+                <table style="width: 100%;">
+                    <tr>
+                        <td style="width: 50%; vertical-align: top; font-size: 14px;">
+                            <p><strong>Condiciones de Pago:</strong><br>{tipo_acuerdo}<br>{plan_pago}<br>{forma_pago}</p>
+                            <p><strong>Cuentas Oficiales:</strong><br>
+                            - BHD (Ahorros): 08010850011<br>
+                            - Banreservas (Ahorros): 9601369253</p>
+                        </td>
+                        <td style="width: 50%; text-align: right; background-color: #f9f9f9; padding: 15px; border-radius: 5px;">
+                            <p style="margin: 5px 0;"><strong>Subtotal:</strong> {moneda} {subtotal:,.2f}</p>
+                            <p style="margin: 5px 0;"><strong>Impuestos (ITBIS):</strong> {moneda} {itbis:,.2f}</p>
+                            <p style="margin: 5px 0;"><strong>Retenciones:</strong> -{moneda} {(isr + ret_itbis):,.2f}</p>
+                            <h2 style="color: #1E3A8A; margin-top: 10px; border-top: 1px solid #ccc; padding-top: 10px;">TOTAL: {moneda} {total_pagar:,.2f}</h2>
+                        </td>
+                    </tr>
+                </table>
+                <p style="text-align: center; margin-top: 30px; font-size: 12px; color: #777;">Gracias por confiar sus procesos a AboAgrim Pro.</p>
+            </div>
+            """
+            # Guardamos la factura generada en la memoria para que no desaparezca
+            st.session_state["factura_html"] = html_recibo
+            st.session_state["factura_id"] = id_factura
+            
+            # Guardamos en Supabase silenciosamente
+            try:
+                datos_db = {
+                    "id_factura": id_factura, "cliente": cliente_proforma, "asunto": asunto_proforma,
+                    "moneda": moneda, "total": total_pagar, "estado": "Pendiente", "fecha_emision": datetime.now().strftime("%Y-%m-%d")
+                }
+                supabase.table("facturas").upsert(datos_db).execute()
+            except Exception:
+                pass # Ignoramos el error de BD si no la ha creado, para que como quiera le emita el recibo.
 
-        # ESTO DIBUJA LOS BOTONES DENTRO DE LA BARRA LATERAL
-        seleccion = st.radio("Módulos", opciones_menu, label_visibility="collapsed")
-        
-        st.divider()
-        st.caption("📍 AboAgrim Pro | Santiago")
+            st.success("✅ ¡Factura Generada Correctamente!")
 
-    # --- RUTAS DE NAVEGACIÓN (Enlazando sus funciones) ---
-    # ESTO VA AFUERA DE LA BARRA (Para que el contenido salga en el centro)
-    if seleccion == "🏠 Mando Central":
-        vista_mando()
-    elif seleccion == "👤 Registro Maestro":
-        vista_registro_maestro()
-    elif seleccion == "📁 Archivo Digital":
-        vista_archivo_digital()
-    elif seleccion == "⏰ Alertas y Plazos":
-        vista_alertas_plazos()
-    elif seleccion == "📄 Plantillas Auto":
-        vista_plantillas()
-    elif seleccion == "💳 Gestión de Honorarios":
-        vista_honorarios()
-    elif seleccion == "⚙️ Configuración":
-        vista_configuracion()
+    # Si la factura está en memoria, la mostramos y damos el botón de descarga
+    if "factura_html" in st.session_state:
+        st.write("---")
+        st.markdown("### 🖨️ Documento Listo para Entregar")
+        # Mostramos la factura visual
+        st.components.v1.html(st.session_state["factura_html"], height=600, scrolling=True)
+        
+        # Botón de descarga
+        st.download_button(
+            label="⬇️ Descargar Archivo para Imprimir (PDF / HTML)",
+            data=st.session_state["factura_html"],
+            file_name=f"{st.session_state.get('factura_id', 'Factura')}.html",
+            mime="text/html",
+            type="primary"
+        )
+        st.info("💡 **Tip para PDF:** Al descargar el archivo ábralo, presione `Ctrl + P` (o Comando + P) y seleccione 'Guardar como PDF'.")
 # --- CENTRO DE ENLACES INSTITUCIONALES (BARRA LATERAL) ---
     st.sidebar.divider()
     
